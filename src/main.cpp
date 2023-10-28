@@ -6,18 +6,18 @@
 #include <ESPAsyncWiFiManager.h>
 #include <AsyncElegantOTA.h>
 
-
 void handleLDR();
 const int LDR = 35;
 enum Mode {WEB, LIGHT};
 Mode currentMode = WEB;
-const int lightDark = 3500;
-const int lightBright = 3000;
 long lastLdrRead = -1;
 long ldrReadInterval = 1000;
 long ldrOn = -1;
-long ldrMinOnCycles = 20;
-int ldrNumOff = 0;
+long ldrOnMillis = 30000;
+
+#define LDR_HIST_SIZE 10
+int currentLdr = -1;
+int ldrAvg10 = -1;
 
 void setupPlayer();
 void playRandom();
@@ -42,7 +42,7 @@ void setup() {
   //player serial
   Serial2.begin(9600);
 
-  randomSeed(analogRead(0));
+  randomSeed(analogRead(LDR));
  
   setupPlayer();
   setupWebServer();
@@ -68,27 +68,27 @@ void loop() {
 
 }
 
+
 void handleLDR(){
-  if(lastLdrRead + ldrReadInterval < millis() && currentMode == LIGHT){
+  if(lastLdrRead + ldrReadInterval < millis() ){
     int ldr = analogRead(LDR);
     lastLdrRead = millis();
     Serial.printf("ldr: %d\n",ldr);
-    if( ldr <= lightBright) {
-      //bright
-      if(ldrOn == -1){
-        Serial.println("switching player on");
-        ldrOn = millis();
-        player.randomAll();
-        ldrNumOff = 0;
+    currentLdr = ldr;
+    ldrAvg10 = ldrAvg10 == -1 ? ldr : (ldrAvg10 * 9 + ldr)/10;
+    if(currentMode == LIGHT){
+      if( ldrAvg10 - ldr > 300) {
+        //bright
+        if(ldrOn == -1){
+          Serial.println("switching player on");
+          ldrOn = millis();
+          player.randomAll();
+        }
       }
-    }else if(ldr >= lightDark){
-      //dark
-      ldrNumOff++;
-      if(ldrOn != -1 && ldrNumOff > ldrMinOnCycles){
-        Serial.println("switching player off");
-        player.stop();
+      if(millis() > ldrOn + ldrOnMillis){
+        Serial.printf("switching player off after %d ms",ldrOnMillis);
         ldrOn = -1;
-        ldrNumOff = 0;
+        player.stop();
       }
     }
   }
@@ -218,6 +218,11 @@ void setupWebServer() {
         currentMode = LIGHT;
         player.stop();
         request->redirect("/");
+    });
+    server.on("/ldrdata", HTTP_GET, [](AsyncWebServerRequest *request){
+       char buffer[1024];
+       sprintf(buffer, "current LDR: %d\navg(10): %d\ndiff: %d",currentLdr,ldrAvg10,ldrAvg10-currentLdr);
+        request->send(200, "text/plain", buffer);
     });
     server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request){
         Serial.println("restarting..");
